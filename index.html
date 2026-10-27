@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101712">
+  <meta name="description" content="Dein privates Finanz-Dashboard mit lokal gespeicherten Positionen und Börsennachrichten.">
+  <title>Marktüberblick – Dein Finanz-Dashboard</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <main class="page-shell">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Marktüberblick Startseite">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <span>MARKT<span class="brand-light">ÜBERBLICK</span></span>
+      </a>
+      <div class="topbar-meta">
+        <span class="privacy-note"><span class="status-dot"></span> Deine Daten bleiben auf diesem Gerät</span>
+        <button class="icon-button" id="settings-button" type="button" aria-label="Depot-Einstellungen öffnen" title="Position hinzufügen">＋</button>
+      </div>
+    </header>
+
+    <section class="intro" aria-labelledby="page-title">
+      <div>
+        <p class="eyebrow"><span id="today-label"></span> <span class="eyebrow-divider">/</span> PERSÖNLICHER ÜBERBLICK</p>
+        <h1 id="page-title">Dein Markt.<br><span>Dein Überblick.</span></h1>
+      </div>
+      <button class="button button-secondary refresh-button" id="refresh-button" type="button">
+        <span aria-hidden="true">↻</span> Aktualisieren
+      </button>
+    </section>
+
+    <div id="app-status" class="app-status" role="status" aria-live="polite"></div>
+
+    <section class="summary-grid" aria-label="Depotübersicht">
+      <article class="summary-card summary-primary">
+        <div class="card-topline"><span>DEPOTWERT</span><span class="card-icon" aria-hidden="true">↗</span></div>
+        <p class="summary-value" id="portfolio-value">–</p>
+        <p class="summary-caption" id="portfolio-value-note">Wird berechnet …</p>
+      </article>
+      <article class="summary-card">
+        <div class="card-topline"><span>GESAMT ERGEBNIS</span><span class="card-icon" aria-hidden="true">◈</span></div>
+        <p class="summary-value" id="portfolio-gain">–</p>
+        <p class="summary-caption" id="portfolio-gain-note">Seit deinem Kauf</p>
+      </article>
+      <article class="summary-card">
+        <div class="card-topline"><span>POSITIONEN</span><span class="card-icon" aria-hidden="true">▤</span></div>
+        <p class="summary-value" id="position-count">0</p>
+        <p class="summary-caption">Aktien in deinem Depot</p>
+      </article>
+    </section>
+
+    <div class="content-grid">
+      <section class="panel portfolio-panel" aria-labelledby="portfolio-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">DEIN DEPOT</p>
+            <h2 id="portfolio-heading">Positionen</h2>
+          </div>
+          <button class="button button-small" id="add-position-button" type="button">＋ Position</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>WERTPAPIER</th><th>STÜCK</th><th>KAUFKURS</th><th>AKTUELL</th><th>ERGEBNIS</th><th><span class="visually-hidden">Aktionen</span></th></tr>
+            </thead>
+            <tbody id="positions-body"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="empty-portfolio" hidden>
+          <span class="empty-icon" aria-hidden="true">◌</span>
+          <h3>Dein Depot wartet auf dich</h3>
+          <p>Füge deine erste Position hinzu. Deine Angaben werden nur in diesem Browser gespeichert.</p>
+          <button class="button" id="empty-add-button" type="button">Position einrichten</button>
+        </div>
+        <p class="data-note">Kurse sind indikativ und können verzögert sein. Keine Anlageberatung.</p>
+      </section>
+
+      <section class="panel news-panel" aria-labelledby="news-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">WIRTSCHAFT & MÄRKTE</p>
+            <h2 id="news-heading">Die Schlagzeilen</h2>
+          </div>
+          <span class="live-label"><span class="status-dot"></span> LIVE</span>
+        </div>
+        <p class="news-description">Ausgewählte Wirtschaftsnachrichten aus deutschsprachigen Quellen.</p>
+        <div class="news-list" id="news-list" aria-live="polite">
+          <p class="loading-message">Nachrichten werden geladen …</p>
+        </div>
+        <p class="data-note" id="news-note">Nachrichten stammen von den verlinkten Quellen.</p>
+      </section>
+    </div>
+
+    <footer class="footer">
+      <span>MARKTÜBERBLICK</span>
+      <span>Dein Depot wird ausschließlich lokal in deinem Browser gespeichert.</span>
+    </footer>
+  </main>
+
+  <dialog class="setup-dialog" id="setup-dialog" aria-labelledby="setup-title">
+    <form id="setup-form" method="dialog">
+      <div class="dialog-heading">
+        <p class="eyebrow">DEIN DEPOT · EINRICHTUNG</p>
+        <h2 id="setup-title">Starte mit deinen Positionen.</h2>
+        <p>Trage Wertpapier, Stückzahl und deinen Kaufkurs ein. Die Angaben bleiben auf diesem Gerät.</p>
+      </div>
+      <div class="form-field">
+        <label for="base-currency">Depotwährung</label>
+        <select id="base-currency" name="currency">
+          <option value="EUR">Euro (EUR)</option>
+          <option value="USD">US-Dollar (USD)</option>
+          <option value="GBP">Pfund Sterling (GBP)</option>
+          <option value="CHF">Schweizer Franken (CHF)</option>
+        </select>
+      </div>
+      <div id="setup-positions" class="setup-positions"></div>
+      <button class="button button-secondary add-row-button" id="add-setup-row" type="button">＋ Weitere Position</button>
+      <p class="form-error" id="setup-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="button button-secondary" id="cancel-setup" type="button" hidden>Abbrechen</button>
+        <button class="button" type="submit">Depot speichern <span aria-hidden="true">→</span></button>
+      </div>
+      <p class="dialog-footnote">Die angezeigten Kurse werden von öffentlichen Drittanbietern abgerufen und können verzögert sein.</p>
+    </form>
+  </dialog>
+
+  <dialog class="setup-dialog edit-dialog" id="edit-dialog" aria-labelledby="edit-title">
+    <form id="edit-form" method="dialog">
+      <div class="dialog-heading">
+        <p class="eyebrow">DEPOT VERWALTEN</p>
+        <h2 id="edit-title">Position hinzufügen.</h2>
+        <p>Verwende das Börsenkürzel aus Yahoo Finance, zum Beispiel <strong>AAPL</strong> oder <strong>BMW.DE</strong>.</p>
+      </div>
+      <label class="form-field"><span>Unternehmen</span><input name="name" maxlength="60" required autocomplete="organization" placeholder="z. B. Apple"></label>
+      <label class="form-field"><span>Börsenkürzel</span><input name="symbol" maxlength="20" required autocapitalize="characters" placeholder="z. B. AAPL"></label>
+      <div class="form-columns">
+        <label class="form-field"><span>Stückzahl</span><input name="shares" type="number" min="0.000001" step="any" required inputmode="decimal" placeholder="10"></label>
+        <label class="form-field"><span>Kaufkurs (<span class="currency-label">EUR</span>)</span><input name="buyPrice" type="number" min="0.000001" step="any" required inputmode="decimal" placeholder="150,00"></label>
+      </div>
+      <p class="form-error" id="edit-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="button button-secondary" id="cancel-edit" type="button">Abbrechen</button>
+        <button class="button" type="submit">Speichern <span aria-hidden="true">→</span></button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
