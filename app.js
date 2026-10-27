@@ -1,6 +1,7 @@
 "use strict";
 
 const STORAGE_KEY = "marktueberblick.v1";
+const STOCK_API_KEY_STORAGE_KEY = "stock_api_key";
 const NEWS_FEEDS = [
   { name: "tagesschau", url: "https://www.tagesschau.de/wirtschaft/index~rss2.xml" },
   { name: "Handelsblatt", url: "https://www.handelsblatt.com/contentexport/feed/schlagzeilen" }
@@ -34,7 +35,13 @@ const elements = {
   currency: document.querySelector("#base-currency"),
   editDialog: document.querySelector("#edit-dialog"),
   editForm: document.querySelector("#edit-form"),
-  editError: document.querySelector("#edit-error")
+  editError: document.querySelector("#edit-error"),
+  apiKeyPanel: document.querySelector("#api-key-panel"),
+  apiKeyForm: document.querySelector("#api-key-form"),
+  apiKeyInput: document.querySelector("#stock-api-key"),
+  apiKeyHelp: document.querySelector("#api-key-help"),
+  apiKeyFeedback: document.querySelector("#api-key-feedback"),
+  removeApiKey: document.querySelector("#remove-api-key")
 };
 
 function setStatus(message, isError = false) {
@@ -192,33 +199,64 @@ function proxyUrls(url) {
   return CORS_PROXY_URLS.map((proxy) => proxy(url));
 }
 
-async function parseYahooResponse(response, symbol) {
-  const payload = await response.json();
-  const result = payload.chart?.result?.[0];
-  if (payload.chart?.error) {
-    throw new Error(payload.chart.error.description || `Yahoo Finance lieferte keinen Kurs für ${symbol}.`);
+function getStockApiKey() {
+  try {
+    return localStorage.getItem(STOCK_API_KEY_STORAGE_KEY)?.trim() || "";
+  } catch (error) {
+    throw new Error(`Der API-Key kann nicht aus dem Browser-Speicher gelesen werden: ${error.message}`);
   }
-  let price = result?.meta?.regularMarketPrice;
-  let currency = result?.meta?.currency;
-  if (currency === "GBp" || currency === "GBX") {
-    price /= 100;
-    currency = "GBP";
-  }
-  if (!Number.isFinite(price) || typeof currency !== "string") {
-    throw new Error(`Yahoo Finance lieferte keinen gültigen Kurs für ${symbol}.`);
-  }
-  return { price, currency };
 }
 
-async function fetchYahooQuote(symbol) {
+function updateApiKeyPanel(forceOpen = false) {
+  let hasKey = false;
+  try {
+    hasKey = Boolean(getStockApiKey());
+  } catch (error) {
+    elements.apiKeyFeedback.textContent = error.message;
+    elements.apiKeyFeedback.classList.add("error");
+    elements.apiKeyPanel.hidden = false;
+    return;
+  }
+  elements.removeApiKey.hidden = !hasKey;
+  elements.apiKeyHelp.textContent = hasKey
+    ? "Ein Finnhub-Key ist in diesem Browser gespeichert. Er wird für die Kursabfrage verwendet."
+    : "Für Börsenkurse wird ein Finnhub-Key benötigt. Der Key wird in diesem Browser gespeichert und nur für Kursabfragen verwendet.";
+  elements.apiKeyPanel.hidden = hasKey && !forceOpen;
+}
+
+async function fetchFinnhubQuote(symbol) {
+  const apiKey = getStockApiKey();
+  if (!apiKey) {
+    updateApiKeyPanel(true);
+    throw new Error("Für Börsenkurse fehlt der Finnhub API-Key. Trage ihn oben ein.");
+  }
   const cached = QUOTE_CACHE.get(symbol);
   if (cached && Date.now() - cached.time < 60_000) return cached.quote;
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`;
-  const quote = await fetchWithFallback(
-    [url, ...proxyUrls(url)],
-    (response) => parseYahooResponse(response, symbol),
-    `Börsenkurs für ${symbol}`
-  );
+  const encodedKey = encodeURIComponent(apiKey);
+  const encodedSymbol = encodeURIComponent(symbol);
+  const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${encodedSymbol}&token=${encodedKey}`;
+  const profileUrl = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodedSymbol}&token=${encodedKey}`;
+  let quote;
+  try {
+    const [quoteResponse, profileResponse] = await Promise.all([
+      fetchHttps(quoteUrl),
+      fetchHttps(profileUrl)
+    ]);
+    const [quoteData, profileData] = await Promise.all([quoteResponse.json(), profileResponse.json()]);
+    if (quoteData.error || profileData.error) {
+      throw new Error(quoteData.error || profileData.error);
+    }
+    if (!Number.isFinite(quoteData.c) || quoteData.c <= 0) {
+      throw new Error(`Finnhub lieferte keinen gültigen Kurs für ${symbol}. Prüfe Kürzel, API-Key und API-Kontingent.`);
+    }
+    if (typeof profileData.currency !== "string" || !profileData.currency) {
+      throw new Error(`Finnhub lieferte keine Währung für ${symbol}.`);
+    }
+    quote = { price: quoteData.c, currency: profileData.currency };
+  } catch (error) {
+    const safeMessage = error.message.split(apiKey).join("[API-Key ausgeblendet]");
+    throw new Error(`Börsenkurs für ${symbol} konnte nicht geladen werden: ${safeMessage}`);
+  }
   QUOTE_CACHE.set(symbol, { quote, time: Date.now() });
   return quote;
 }
@@ -245,7 +283,7 @@ async function fetchExchangeRate(from, to) {
 }
 
 async function getPositionValues(position) {
-  const quote = await fetchYahooQuote(position.symbol);
+  const quote = await fetchFinnhubQuote(position.symbol);
   const rate = await fetchExchangeRate(quote.currency, portfolio.currency);
   const currentPrice = quote.price * rate;
   const marketValue = currentPrice * position.shares;
@@ -611,4 +649,46 @@ elements.editForm.addEventListener("submit", (event) => {
 });
 document.querySelector("#refresh-button").addEventListener("click", refreshAll);
 
+document.querySelector("#api-key-settings-button").addEventListener("click", () => {
+  const open = elements.apiKeyPanel.hidden;
+  updateApiKeyPanel(open);
+  if (open) elements.apiKeyInput.focus();
+});
+elements.apiKeyForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const apiKey = elements.apiKeyInput.value.trim();
+  elements.apiKeyFeedback.classList.remove("error");
+  if (!apiKey) {
+    elements.apiKeyFeedback.textContent = "Bitte gib einen gültigen Finnhub API-Key ein.";
+    elements.apiKeyFeedback.classList.add("error");
+    return;
+  }
+  try {
+    localStorage.setItem(STOCK_API_KEY_STORAGE_KEY, apiKey);
+    QUOTE_CACHE.clear();
+    elements.apiKeyInput.value = "";
+    elements.apiKeyFeedback.textContent = "Key lokal gespeichert. Kurse werden aktualisiert …";
+    updateApiKeyPanel();
+    refreshAll();
+  } catch (error) {
+    elements.apiKeyFeedback.textContent = `Der Key konnte nicht gespeichert werden: ${error.message}`;
+    elements.apiKeyFeedback.classList.add("error");
+  }
+});
+elements.removeApiKey.addEventListener("click", () => {
+  try {
+    localStorage.removeItem(STOCK_API_KEY_STORAGE_KEY);
+    QUOTE_CACHE.clear();
+    elements.apiKeyInput.value = "";
+    elements.apiKeyFeedback.classList.remove("error");
+    elements.apiKeyFeedback.textContent = "Der Key wurde aus diesem Browser gelöscht.";
+    updateApiKeyPanel(true);
+    refreshAll();
+  } catch (error) {
+    elements.apiKeyFeedback.textContent = `Der Key konnte nicht gelöscht werden: ${error.message}`;
+    elements.apiKeyFeedback.classList.add("error");
+  }
+});
+
+updateApiKeyPanel();
 initialise();

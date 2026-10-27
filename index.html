@@ -18,6 +18,7 @@
       </a>
       <div class="topbar-meta">
         <span class="privacy-note"><span class="status-dot"></span> Deine Daten bleiben auf diesem Gerät</span>
+        <button class="icon-button" id="api-key-settings-button" type="button" aria-label="Kurs-API-Key einrichten" title="Kurs-API-Key">⚿</button>
         <button class="icon-button" id="settings-button" type="button" aria-label="Depot-Einstellungen öffnen" title="Position hinzufügen">＋</button>
       </div>
     </header>
@@ -33,6 +34,25 @@
     </section>
 
     <div id="app-status" class="app-status" role="status" aria-live="polite"></div>
+
+    <section class="api-key-panel" id="api-key-panel" aria-labelledby="api-key-heading" hidden>
+      <div class="api-key-copy">
+        <p class="eyebrow">KURSDATEN · FINNHUB</p>
+        <h2 id="api-key-heading">API-Key einrichten</h2>
+        <p id="api-key-help">Für Börsenkurse wird ein Finnhub-Key benötigt. Der Key wird in diesem Browser gespeichert und nur für Kursabfragen verwendet.</p>
+        <p class="api-key-warning"><strong>Sicherheitshinweis:</strong> In einer statischen Website ist ein Browser-Key nicht geheim: Er ist in localStorage und in der Anfrage-URL sichtbar. Nutze keinen Key mit sensiblen Berechtigungen oder hohem Kontingent.</p>
+      </div>
+      <form class="api-key-form" id="api-key-form" method="post">
+        <label class="form-field" for="stock-api-key">Finnhub API-Key
+          <input id="stock-api-key" name="apiKey" type="password" required autocomplete="new-password" spellcheck="false" autocapitalize="off" placeholder="API-Key hier einfügen">
+        </label>
+        <div class="api-key-actions">
+          <button class="button button-secondary" id="remove-api-key" type="button" hidden>Key löschen</button>
+          <button class="button" type="submit">Key speichern</button>
+        </div>
+        <p class="api-key-feedback" id="api-key-feedback" role="status" aria-live="polite"></p>
+      </form>
+    </section>
 
     <section class="summary-grid" aria-label="Depotübersicht">
       <article class="summary-card summary-primary">
