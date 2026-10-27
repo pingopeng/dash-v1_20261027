@@ -5,6 +5,11 @@ const NEWS_FEEDS = [
   { name: "tagesschau", url: "https://www.tagesschau.de/wirtschaft/index~rss2.xml" },
   { name: "Handelsblatt", url: "https://www.handelsblatt.com/contentexport/feed/schlagzeilen" }
 ];
+const CORS_PROXY_URLS = [
+  (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+];
+const REQUEST_TIMEOUT_MS = 6000;
 const FX_CACHE = new Map();
 const QUOTE_CACHE = new Map();
 let portfolio = null;
@@ -155,31 +160,44 @@ function getInputPosition(row) {
   return position;
 }
 
-async function getViaProxy(url) {
-  const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-  const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(10000) });
-  if (!response.ok) throw new Error(`Proxy antwortet mit HTTP ${response.status}.`);
+function requireHttps(url) {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:") {
+    throw new Error(`Unsichere API-URL blockiert: ${parsed.origin}`);
+  }
+  return parsed.href;
+}
+
+async function fetchHttps(url, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const secureUrl = requireHttps(url);
+  const response = await fetch(secureUrl, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!response.ok) throw new Error(`HTTP ${response.status} von ${new URL(secureUrl).host}.`);
   return response;
 }
 
-async function fetchYahooQuote(symbol) {
-  const cached = QUOTE_CACHE.get(symbol);
-  if (cached && Date.now() - cached.time < 60_000) return cached.quote;
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`;
-  let payload;
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!response.ok) throw new Error(`Direkte Kursabfrage antwortet mit HTTP ${response.status}.`);
-    payload = await response.json();
-  } catch (directError) {
+async function fetchWithFallback(urls, parseResponse, label) {
+  const errors = [];
+  for (const url of urls) {
     try {
-      const response = await getViaProxy(url);
-      payload = await response.json();
-    } catch (proxyError) {
-      throw new Error(`Kurs für ${symbol} konnte nicht abgerufen werden. Direkt: ${directError.message} Proxy: ${proxyError.message}`);
+      const timeoutMs = new URL(url).hostname === "r.jina.ai" ? 15000 : REQUEST_TIMEOUT_MS;
+      return await parseResponse(await fetchHttps(url, timeoutMs));
+    } catch (error) {
+      errors.push(error.message);
     }
   }
+  throw new Error(`${label} nicht erreichbar. ${errors.join(" | ")}`);
+}
+
+function proxyUrls(url) {
+  return CORS_PROXY_URLS.map((proxy) => proxy(url));
+}
+
+async function parseYahooResponse(response, symbol) {
+  const payload = await response.json();
   const result = payload.chart?.result?.[0];
+  if (payload.chart?.error) {
+    throw new Error(payload.chart.error.description || `Yahoo Finance lieferte keinen Kurs für ${symbol}.`);
+  }
   let price = result?.meta?.regularMarketPrice;
   let currency = result?.meta?.currency;
   if (currency === "GBp" || currency === "GBX") {
@@ -187,9 +205,20 @@ async function fetchYahooQuote(symbol) {
     currency = "GBP";
   }
   if (!Number.isFinite(price) || typeof currency !== "string") {
-    throw new Error(`Für ${symbol} ist aktuell kein gültiger Kurs verfügbar.`);
+    throw new Error(`Yahoo Finance lieferte keinen gültigen Kurs für ${symbol}.`);
   }
-  const quote = { price, currency };
+  return { price, currency };
+}
+
+async function fetchYahooQuote(symbol) {
+  const cached = QUOTE_CACHE.get(symbol);
+  if (cached && Date.now() - cached.time < 60_000) return cached.quote;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`;
+  const quote = await fetchWithFallback(
+    [url, ...proxyUrls(url)],
+    (response) => parseYahooResponse(response, symbol),
+    `Börsenkurs für ${symbol}`
+  );
   QUOTE_CACHE.set(symbol, { quote, time: Date.now() });
   return quote;
 }
@@ -199,13 +228,18 @@ async function fetchExchangeRate(from, to) {
   const key = `${from}:${to}`;
   const cached = FX_CACHE.get(key);
   if (cached && Date.now() - cached.time < 60 * 60 * 1000) return cached.rate;
-  const response = await fetch(`https://open.er-api.com/v6/latest/${encodeURIComponent(from)}`, {
-    signal: AbortSignal.timeout(8000)
-  });
-  if (!response.ok) throw new Error(`Wechselkurs konnte nicht abgerufen werden (HTTP ${response.status}).`);
-  const data = await response.json();
-  const rate = data.result === "success" ? data.rates?.[to] : null;
-  if (!Number.isFinite(rate)) throw new Error(`Kein Wechselkurs von ${from} nach ${to} verfügbar.`);
+  const primaryUrl = `https://open.er-api.com/v6/latest/${encodeURIComponent(from)}`;
+  const fallbackUrl = `https://api.frankfurter.app/latest?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const rate = await fetchWithFallback(
+    [primaryUrl, ...proxyUrls(primaryUrl), fallbackUrl, ...proxyUrls(fallbackUrl)],
+    async (response) => {
+      const data = await response.json();
+      const value = data.rates?.[to];
+      if (!Number.isFinite(value)) throw new Error(`Kein Wechselkurs von ${from} nach ${to} in der API-Antwort.`);
+      return value;
+    },
+    `Wechselkurs ${from} → ${to}`
+  );
   FX_CACHE.set(key, { rate, time: Date.now() });
   return rate;
 }
@@ -292,7 +326,7 @@ function renderPortfolio() {
     elements.gain.textContent = "–";
     elements.valueNote.textContent = "Füge eine Position hinzu, um loszulegen.";
     elements.gainNote.textContent = "Seit deinem Kauf";
-    return;
+    return [];
   }
   const updates = portfolio.positions.map((position) => {
     const row = renderPosition(position, null);
@@ -303,7 +337,7 @@ function renderPortfolio() {
   elements.gain.textContent = "Wird berechnet …";
   elements.value.className = "summary-value";
   elements.gain.className = "summary-value";
-  return Promise.all(updates);
+  return Promise.all(updates).then((errors) => errors.filter(Boolean));
 }
 
 async function refreshOnePosition(position, row) {
@@ -311,10 +345,11 @@ async function refreshOnePosition(position, row) {
     const values = await getPositionValues(position);
     row.replaceWith(renderPosition(position, values));
     updateSummary();
+    return null;
   } catch (error) {
-    row.replaceWith(renderPosition(position, null, "—"));
+    row.replaceWith(renderPosition(position, null, "Kurs nicht verfügbar"));
     updateSummary();
-    setStatus(error.message, true);
+    return `${position.symbol}: ${error.message}`;
   }
 }
 
@@ -364,22 +399,46 @@ function parseFormattedMoney(text) {
 
 async function fetchFeed(feed) {
   const endpoint = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}`;
-  try {
-    const response = await fetch(endpoint, { signal: AbortSignal.timeout(9000) });
-    if (!response.ok) throw new Error(`RSS-Umwandler antwortet mit HTTP ${response.status}.`);
-    const data = await response.json();
-    if (data.status !== "ok" || !Array.isArray(data.items)) throw new Error("Der RSS-Umwandler lieferte keine Nachrichten.");
-    return data.items.slice(0, 8).map((item) => ({
-      source: feed.name,
-      title: item.title,
-      link: item.link,
-      date: item.pubDate
-    }));
-  } catch (rssError) {
-    try {
-      const response = await getViaProxy(feed.url);
-      const xmlText = await response.text();
-      const xml = new DOMParser().parseFromString(xmlText, "application/xml");
+  const jinaEndpoint = `https://r.jina.ai/${feed.url}`;
+  const items = await fetchWithFallback(
+    [endpoint, jinaEndpoint, ...proxyUrls(feed.url)],
+    async (response) => {
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("json") || response.url.includes("rss2json.com")) {
+        const data = await response.json();
+        if (data.status !== "ok" || !Array.isArray(data.items)) {
+          throw new Error(data.message || "RSS-Umwandler lieferte keine Nachrichten.");
+        }
+        return data.items.map((item) => ({
+          source: feed.name,
+          title: item.title,
+          link: item.link,
+          date: item.pubDate
+        })).filter((item) => item.title && item.link).slice(0, 8);
+      }
+
+      const body = await response.text();
+      if (response.url.includes("r.jina.ai")) {
+        const lines = body.split(/\r?\n/);
+        const headings = lines.map((line, index) => ({
+          match: line.match(/^### \[(.+?)\]\((https:\/\/[^)]+)\)/),
+          index
+        })).filter((entry) => entry.match);
+        return headings.map((entry, index) => {
+          const nextHeading = headings[index + 1]?.index ?? lines.length;
+          const date = lines.slice(entry.index + 1, nextHeading)
+            .map((line) => line.trim())
+            .find((line) => Number.isFinite(Date.parse(line)) && /\b\d{4}\b/.test(line)) || "";
+          return {
+            source: feed.name,
+            title: entry.match[1],
+            link: entry.match[2],
+            date
+          };
+        }).slice(0, 8);
+      }
+
+      const xml = new DOMParser().parseFromString(body, "application/xml");
       if (xml.querySelector("parsererror")) throw new Error("Der RSS-Feed enthält ungültiges XML.");
       return [...xml.querySelectorAll("item")].slice(0, 8).map((item) => ({
         source: feed.name,
@@ -387,16 +446,17 @@ async function fetchFeed(feed) {
         link: item.querySelector("link")?.textContent?.trim() || "",
         date: item.querySelector("pubDate")?.textContent || ""
       })).filter((item) => item.title && item.link);
-    } catch (proxyError) {
-      throw new Error(`${feed.name}: ${rssError.message} Zusätzlich fehlgeschlagen: ${proxyError.message}`);
-    }
-  }
+    },
+    `Nachrichten von ${feed.name}`
+  );
+  if (!items.length) throw new Error(`${feed.name} lieferte keine gültigen Schlagzeilen.`);
+  return items;
 }
 
 function safeLink(value) {
   try {
     const url = new URL(value);
-    return ["https:", "http:"].includes(url.protocol) ? url.href : null;
+    return url.protocol === "https:" ? url.href : null;
   } catch {
     return null;
   }
@@ -409,7 +469,9 @@ function renderNews(items, errors) {
     message.className = "news-empty";
     message.textContent = "Nachrichten sind gerade nicht erreichbar. Bitte prüfe deine Verbindung oder lade die Seite erneut.";
     elements.news.append(message);
-    elements.newsNote.textContent = errors.join(" ");
+    elements.newsNote.textContent = errors.length
+      ? `${errors.join(" ")} Prüfe die Internetverbindung oder versuche es später erneut.`
+      : "Es wurden keine Nachrichten geliefert. Bitte versuche es später erneut.";
     return;
   }
   items.slice(0, 10).forEach((item) => {
@@ -450,6 +512,7 @@ async function refreshNews() {
     .flatMap((result) => result.value)
     .sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0));
   renderNews(articles, errors);
+  return errors;
 }
 
 function removePosition(id) {
@@ -457,8 +520,7 @@ function removePosition(id) {
   if (!position || !window.confirm(`${position.name} aus deinem Depot entfernen?`)) return;
   try {
     savePortfolio({ ...portfolio, positions: portfolio.positions.filter((item) => item.id !== id) });
-    setStatus("Position wurde entfernt.");
-    renderPortfolio();
+    refreshAll();
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -466,8 +528,16 @@ function removePosition(id) {
 
 async function refreshAll() {
   setStatus("Kurse und Nachrichten werden aktualisiert …");
-  await Promise.all([refreshNews(), renderPortfolio()]);
-  if (!elements.status.classList.contains("error")) setStatus(`Stand: ${new Intl.DateTimeFormat("de-DE", { hour: "2-digit", minute: "2-digit" }).format(new Date())}`);
+  const [newsErrors, quoteErrors] = await Promise.all([refreshNews(), renderPortfolio()]);
+  const errors = [
+    ...quoteErrors,
+    ...newsErrors.map((error) => `Nachrichten: ${error}`)
+  ];
+  if (errors.length) {
+    setStatus(`Einige Daten konnten nicht geladen werden: ${errors.join(" · ")}`, true);
+    return;
+  }
+  setStatus(`Stand: ${new Intl.DateTimeFormat("de-DE", { hour: "2-digit", minute: "2-digit" }).format(new Date())}`);
 }
 
 function initialise() {
@@ -477,15 +547,13 @@ function initialise() {
     if (!portfolio) {
       portfolio = { currency: "EUR", positions: [] };
       openSetupDialog(true);
-    } else {
-      renderPortfolio();
     }
   } catch (error) {
     setStatus(error.message, true);
     portfolio = { currency: "EUR", positions: [] };
     openSetupDialog(true);
   }
-  refreshNews();
+  refreshAll();
 }
 
 document.querySelector("#add-setup-row").addEventListener("click", () => createPositionRow());
@@ -503,8 +571,7 @@ elements.setupForm.addEventListener("submit", (event) => {
     }
     savePortfolio({ currency: elements.currency.value, positions });
     elements.setupDialog.close();
-    setStatus("Dein Depot wurde sicher in diesem Browser gespeichert.");
-    renderPortfolio();
+    refreshAll();
   } catch (error) {
     elements.setupError.textContent = error.message;
   }
@@ -537,8 +604,7 @@ elements.editForm.addEventListener("submit", (event) => {
       : [...portfolio.positions, position];
     savePortfolio({ ...portfolio, positions });
     elements.editDialog.close();
-    setStatus("Dein Depot wurde lokal gespeichert.");
-    renderPortfolio();
+    refreshAll();
   } catch (error) {
     elements.editError.textContent = error.message;
   }
